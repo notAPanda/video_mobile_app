@@ -356,7 +356,6 @@ export function VideoMode() {
           className="h-full w-full"
           style={{
             maxHeight: "100dvh",
-            transform: mirror ? "scaleX(-1)" : undefined,
           }}
         >
           <video
@@ -364,10 +363,12 @@ export function VideoMode() {
             playsInline
             muted
             autoPlay
+            style={{ transform: mirror ? "scaleX(-1)" : undefined }}
             className="absolute inset-0 h-full w-full object-cover bg-black"
           />
           <canvas
             ref={canvasRef}
+            style={{ transform: mirror ? "scaleX(-1)" : undefined }}
             className="absolute inset-0 h-full w-full object-cover"
           />
         </div>
