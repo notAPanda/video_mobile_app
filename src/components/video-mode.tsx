@@ -14,6 +14,8 @@ import {
   CameraOff,
   Activity,
   ScanFace,
+  Lock,
+  Video as VideoIcon,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -28,6 +30,7 @@ type Status =
   | "running"
   | "error"
   | "denied"
+  | "insecure"
 
 interface FacingState {
   facingMode: "user" | "environment"
@@ -59,6 +62,7 @@ export function VideoMode() {
   const [visibleCount, setVisibleCount] = useState(0)
   const [personDetected, setPersonDetected] = useState(false)
   const [videoAspect, setVideoAspect] = useState<number>(16 / 9)
+  const [trackInfo, setTrackInfo] = useState<string>("")
 
   const mirror = mirrorOverride ?? facing.mirror
 
@@ -76,52 +80,122 @@ export function VideoMode() {
   const startCamera = useCallback(
     async (facingMode: "user" | "environment") => {
       stopCamera()
+
+      // Secure-context guard: getUserMedia only exists on HTTPS or localhost.
+      // Hitting a plain-HTTP URL on mobile leaves navigator.mediaDevices
+      // undefined — surface that clearly instead of crashing.
+      if (
+        typeof navigator === "undefined" ||
+        !navigator.mediaDevices ||
+        typeof navigator.mediaDevices.getUserMedia !== "function" ||
+        !window.isSecureContext
+      ) {
+        setStatus("insecure")
+        setError(
+          "Camera access needs a secure (HTTPS) connection or localhost. On mobile, open the HTTPS preview URL rather than the raw HTTP IP address.",
+        )
+        return
+      }
+
       setStatus("requesting-camera")
       setStatusMsg("Requesting camera access…")
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+
+      // Try the preferred facingMode first, then fall back to a constraint-free
+      // request (some laptops reject `facingMode: environment` even as `ideal`).
+      const attempts: MediaStreamConstraints[] = [
+        {
           video: {
             facingMode: { ideal: facingMode },
             width: { ideal: 1280 },
             height: { ideal: 720 },
           },
           audio: false,
-        })
-        streamRef.current = stream
-        const video = videoRef.current
-        if (!video) return
-        video.srcObject = stream
-        await video.play()
-        // Wait for dimensions.
-        if (!video.videoWidth) {
-          await new Promise<void>((resolve) => {
-            const handler = () => {
-              video.removeEventListener("loadedmetadata", handler)
-              resolve()
-            }
-            video.addEventListener("loadedmetadata", handler)
-          })
+        },
+        { video: true, audio: false },
+      ]
+
+      let stream: MediaStream | null = null
+      let lastErr: unknown = null
+      for (const constraints of attempts) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints)
+          break
+        } catch (err) {
+          lastErr = err
+          // Only retry on OverconstrainedError / NotFound; bail on permission.
+          const name = (err as DOMException)?.name
+          if (name === "NotAllowedError" || name === "SecurityError") break
         }
-        setVideoAspect(video.videoWidth / video.videoHeight || 16 / 9)
-        setStatus("running")
-      } catch (err) {
-        const e = err as DOMException
+      }
+
+      if (!stream) {
+        const e = lastErr as DOMException
         if (
-          e.name === "NotAllowedError" ||
-          e.name === "SecurityError"
+          e?.name === "NotAllowedError" ||
+          e?.name === "SecurityError"
         ) {
           setStatus("denied")
           setError(
             "Camera permission was denied. Allow camera access in your browser settings to use live pose detection.",
           )
-        } else if (e.name === "NotFoundError") {
+        } else if (e?.name === "NotFoundError") {
           setStatus("error")
           setError("No camera device was found on this device.")
         } else {
           setStatus("error")
-          setError(e.message || "Unable to start the camera.")
+          setError(e?.message || "Unable to start the camera.")
+        }
+        return
+      }
+
+      streamRef.current = stream
+
+      // Surface which camera/resolution we actually got (handy for debugging).
+      const track = stream.getVideoTracks()[0]
+      if (track) {
+        const s = track.getSettings()
+        setTrackInfo(
+          `${s.width ?? "?"}×${s.height ?? "?"}` +
+            (s.facingMode ? ` · ${s.facingMode}` : ""),
+        )
+      }
+
+      const video = videoRef.current
+      if (!video) return
+
+      // Attach + play. Retry once if play() rejects (common on first load
+      // before the element has finished laying out).
+      video.srcObject = stream
+      try {
+        await video.play()
+      } catch {
+        try {
+          await new Promise((r) => setTimeout(r, 120))
+          await video.play()
+        } catch {
+          /* surfaced as black-frame / stalled below */
         }
       }
+
+      // Wait for the first frame metadata so we know real dimensions.
+      if (!video.videoWidth) {
+        await new Promise<void>((resolve) => {
+          const handler = () => {
+            video.removeEventListener("loadedmetadata", handler)
+            resolve()
+          }
+          video.addEventListener("loadedmetadata", handler)
+          // Safety timeout — don't hang forever if the track stalls.
+          setTimeout(resolve, 3000)
+        })
+      }
+
+      setVideoAspect(
+        video.videoWidth && video.videoHeight
+          ? video.videoWidth / video.videoHeight
+          : 16 / 9,
+      )
+      setStatus("running")
     },
     [stopCamera],
   )
@@ -157,7 +231,6 @@ export function VideoMode() {
           drawSkeleton(ctx, landmarks, {
             width: canvas.width,
             height: canvas.height,
-            mirror,
             minVisibility: 0.5,
           })
         }
@@ -189,7 +262,7 @@ export function VideoMode() {
     } else {
       rafRef.current = requestAnimationFrame(() => loopRef.current())
     }
-  }, [mirror, showSkeleton])
+  }, [showSkeleton])
 
   // Keep the rescheduling ref in sync with the latest loop closure.
   useEffect(() => {
@@ -267,31 +340,34 @@ export function VideoMode() {
 
   const isLoading =
     status === "loading-model" || status === "requesting-camera"
-  const isError = status === "error" || status === "denied"
+  const isError =
+    status === "error" || status === "denied" || status === "insecure"
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-black text-white">
       {/* ---- Camera stage ---- */}
       <div className="relative flex flex-1 items-center justify-center overflow-hidden">
-        {/* Video + canvas, aspect-locked to the feed so the skeleton aligns. */}
+        {/* Video + canvas share ONE mirrored wrapper so the skeleton always
+            aligns with the feed. We never toggle visibility on the <video>
+            (some browsers stop decoding frames to a hidden video element and
+            then render black even after it becomes visible). */}
         <div
           className="relative h-full w-full"
-          style={{ maxHeight: "100dvh" }}
+          style={{
+            maxHeight: "100dvh",
+            transform: mirror ? "scaleX(-1)" : undefined,
+          }}
         >
           <video
             ref={videoRef}
             playsInline
             muted
-            className="absolute inset-0 h-full w-full object-cover"
-            style={{
-              transform: mirror ? "scaleX(-1)" : undefined,
-              visibility: status === "running" ? "visible" : "hidden",
-            }}
+            autoPlay
+            className="absolute inset-0 h-full w-full object-cover bg-black"
           />
           <canvas
             ref={canvasRef}
             className="absolute inset-0 h-full w-full object-cover"
-            style={{ transform: mirror ? "scaleX(-1)" : undefined }}
           />
         </div>
 
@@ -347,6 +423,12 @@ export function VideoMode() {
                   label={`${visibleCount}/33 pts`}
                   tone={personDetected ? "lime" : "muted"}
                 />
+                {trackInfo && (
+                  <HudChip
+                    icon={<VideoIcon className="size-3.5" />}
+                    label={trackInfo}
+                  />
+                )}
                 <HudChip
                   icon={
                     <span
@@ -404,14 +486,14 @@ export function VideoMode() {
           </div>
         )}
 
-        {/* Loading overlay */}
+        {/* Loading overlay — opaque so we never flash an empty video stage. */}
         <AnimatePresence>
           {isLoading && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 bg-black/85 backdrop-blur"
+              className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-4 bg-black"
             >
               <div className="relative">
                 <div className="size-16 rounded-full border-2 border-white/10" />
@@ -429,19 +511,21 @@ export function VideoMode() {
           )}
         </AnimatePresence>
 
-        {/* Error / permission overlay */}
+        {/* Error / permission / insecure-context overlay */}
         <AnimatePresence>
           {isError && (
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              className="absolute inset-0 z-30 flex items-center justify-center bg-black/90 p-6 backdrop-blur"
+              className="absolute inset-0 z-30 flex items-center justify-center bg-black/95 p-6 backdrop-blur"
             >
               <div className="max-w-sm text-center">
                 <div className="mx-auto mb-4 flex size-14 items-center justify-center rounded-2xl bg-red-500/15 text-red-400">
                   {status === "denied" ? (
                     <CameraOff className="size-7" />
+                  ) : status === "insecure" ? (
+                    <Lock className="size-7" />
                   ) : (
                     <AlertTriangle className="size-7" />
                   )}
@@ -449,7 +533,9 @@ export function VideoMode() {
                 <h3 className="text-lg font-bold">
                   {status === "denied"
                     ? "Camera access needed"
-                    : "Something went wrong"}
+                    : status === "insecure"
+                      ? "Secure connection required"
+                      : "Something went wrong"}
                 </h3>
                 <p className="mt-2 text-sm text-white/60">{error}</p>
                 <div className="mt-6 flex justify-center gap-3">

@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
+    "dev:lan": "next dev -p 3000 -H 0.0.0.0 --experimental-https --experimental-https-key ./192.168.0.138+1-key.pem --experimental-https-cert ./192.168.0.138+1.pem",
+    "dev:tunnel": "echo 'Run in another terminal:  cloudflared tunnel --url http://localhost:3000  (or)  ngrok http 3000' && next dev -p 3000",
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
     "lint": "eslint .",

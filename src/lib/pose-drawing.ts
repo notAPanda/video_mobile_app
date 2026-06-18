@@ -9,8 +9,6 @@ export interface DrawSkeletonOptions {
   width: number
   /** Height of the canvas (drawing buffer) in pixels. */
   height: number
-  /** Mirror horizontally (typical for a front-facing selfie camera). */
-  mirror?: boolean
   /** Minimum landmark visibility (0..1) to draw a bone / joint. */
   minVisibility?: number
 }
@@ -32,26 +30,28 @@ const PART_COLORS: Record<string, string> = {
 const JOINT_COLOR = "#ffffff"
 const KEY_JOINT_COLOR = "#a3e635"
 
+// NOTE: coordinates are drawn in raw camera space. Any mirroring is handled
+// at the CSS layer (transform on a wrapper that contains BOTH the video and
+// the canvas), so the skeleton always stays aligned with the video feed.
 function toCanvas(
   lm: NormalizedLandmark,
   width: number,
   height: number,
-  mirror: boolean,
 ): { x: number; y: number } {
-  const nx = mirror ? 1 - lm.x : lm.x
-  return { x: nx * width, y: lm.y * height }
+  return { x: lm.x * width, y: lm.y * height }
 }
 
 /**
  * Draw a pose skeleton onto a 2D canvas context. Assumes the caller has
- * already cleared the canvas.
+ * already cleared the canvas. Mirroring is NOT applied here — wrap the video
+ * and canvas in a CSS-mirrored container if a selfie view is needed.
  */
 export function drawSkeleton(
   ctx: CanvasRenderingContext2D,
   landmarks: NormalizedLandmark[] | undefined,
   opts: DrawSkeletonOptions,
 ): void {
-  const { width, height, mirror = true, minVisibility = 0.5 } = opts
+  const { width, height, minVisibility = 0.5 } = opts
   if (!landmarks || landmarks.length === 0) return
 
   // ---- Bones ----
@@ -70,8 +70,8 @@ export function drawSkeleton(
       if (!a || !b) continue
       if ((a.visibility ?? 0) < minVisibility) continue
       if ((b.visibility ?? 0) < minVisibility) continue
-      const pa = toCanvas(a, width, height, mirror)
-      const pb = toCanvas(b, width, height, mirror)
+      const pa = toCanvas(a, width, height)
+      const pb = toCanvas(b, width, height)
       ctx.moveTo(pa.x, pa.y)
       ctx.lineTo(pb.x, pb.y)
     }
@@ -82,7 +82,7 @@ export function drawSkeleton(
   ctx.fillStyle = JOINT_COLOR
   for (const lm of landmarks) {
     if ((lm.visibility ?? 0) < minVisibility) continue
-    const p = toCanvas(lm, width, height, mirror)
+    const p = toCanvas(lm, width, height)
     ctx.beginPath()
     ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2)
     ctx.fill()
@@ -95,7 +95,7 @@ export function drawSkeleton(
   for (const idx of KEY_JOINTS) {
     const lm = landmarks[idx]
     if (!lm || (lm.visibility ?? 0) < minVisibility) continue
-    const p = toCanvas(lm, width, height, mirror)
+    const p = toCanvas(lm, width, height)
     ctx.beginPath()
     ctx.arc(p.x, p.y, 6, 0, Math.PI * 2)
     ctx.fill()
