@@ -172,7 +172,8 @@ export function VideoMode() {
         try {
           await new Promise((r) => setTimeout(r, 120))
           await video.play()
-        } catch {
+        } catch (err) {
+            // console.error("video.play() failed:", err)
           /* surfaced as black-frame / stalled below */
         }
       }
@@ -352,7 +353,7 @@ export function VideoMode() {
             (some browsers stop decoding frames to a hidden video element and
             then render black even after it becomes visible). */}
         <div
-          className="relative h-full w-full"
+          className="h-full w-full"
           style={{
             maxHeight: "100dvh",
             transform: mirror ? "scaleX(-1)" : undefined,
