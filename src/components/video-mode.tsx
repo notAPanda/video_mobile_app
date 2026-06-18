@@ -1,7 +1,7 @@
-"use client"
+"use client";
 
-import { useCallback, useEffect, useRef, useState } from "react"
-import { motion, AnimatePresence } from "framer-motion"
+import { useCallback, useEffect, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowLeft,
   RefreshCw,
@@ -16,13 +16,14 @@ import {
   ScanFace,
   Lock,
   Video as VideoIcon,
-} from "lucide-react"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import { useAppStore } from "@/lib/store"
-import { getPoseDetector } from "@/lib/pose-detector"
-import { drawSkeleton, countVisibleLandmarks } from "@/lib/pose-drawing"
-import { cn } from "@/lib/utils"
+  Camera,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { useAppStore } from "@/lib/store";
+import { getPoseDetector } from "@/lib/pose-detector";
+import { drawSkeleton, countVisibleLandmarks } from "@/lib/pose-drawing";
+import { cn } from "@/lib/utils";
 
 type Status =
   | "loading-model"
@@ -30,56 +31,87 @@ type Status =
   | "running"
   | "error"
   | "denied"
-  | "insecure"
+  | "insecure";
 
 interface FacingState {
-  facingMode: "user" | "environment"
-  mirror: boolean
+  facingMode: "user" | "environment";
+  mirror: boolean;
 }
 
 export function VideoMode() {
-  const goHome = useAppStore((s) => s.goHome)
+  const goHome = useAppStore((s) => s.goHome);
 
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const streamRef = useRef<MediaStream | null>(null)
-  const rafRef = useRef<number | null>(null)
-  const detector = useRef(getPoseDetector())
-  const fpsBufRef = useRef<number[]>([])
-  const lastDetectTsRef = useRef<number>(0)
-  const loopRef = useRef<() => void>(() => {})
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const rafRef = useRef<number | null>(null);
+  const detector = useRef(getPoseDetector());
+  const fpsBufRef = useRef<number[]>([]);
+  const lastDetectTsRef = useRef<number>(0);
+  const loopRef = useRef<() => void>(() => {});
+  const lastLandmarksRef = useRef<any>(null);
 
-  const [status, setStatus] = useState<Status>("loading-model")
-  const [statusMsg, setStatusMsg] = useState("Loading pose model…")
-  const [error, setError] = useState<string>("")
+  const [status, setStatus] = useState<Status>("loading-model");
+  const [statusMsg, setStatusMsg] = useState("Loading pose model…");
+  const [error, setError] = useState<string>("");
   const [facing, setFacing] = useState<FacingState>({
     facingMode: "environment",
     mirror: false,
-  })
-  const [showSkeleton, setShowSkeleton] = useState(true)
-  const [mirrorOverride, setMirrorOverride] = useState<boolean | null>(null)
-  const [fps, setFps] = useState(0)
-  const [visibleCount, setVisibleCount] = useState(0)
-  const [personDetected, setPersonDetected] = useState(false)
-  const [videoAspect, setVideoAspect] = useState<number>(16 / 9)
-  const [trackInfo, setTrackInfo] = useState<string>("")
+  });
+  const [showSkeleton, setShowSkeleton] = useState(true);
+  const [mirrorOverride, setMirrorOverride] = useState<boolean | null>(null);
+  const [fps, setFps] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(0);
+  const [personDetected, setPersonDetected] = useState(false);
+  const [videoAspect, setVideoAspect] = useState<number>(16 / 9);
+  const [trackInfo, setTrackInfo] = useState<string>("");
+  const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
 
-  const mirror = mirrorOverride ?? facing.mirror
+  const mirror = mirrorOverride ?? facing.mirror;
 
   // ---- Camera ----
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
     }
     if (videoRef.current) {
-      videoRef.current.srcObject = null
+      videoRef.current.srcObject = null;
     }
-  }, [])
+  }, []);
+
+  const takePhoto = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) return;
+
+    const photoCanvas = document.createElement("canvas");
+    photoCanvas.width = video.videoWidth;
+    photoCanvas.height = video.videoHeight;
+    const ctx = photoCanvas.getContext("2d");
+    if (!ctx) return;
+
+    if (mirror) {
+      ctx.translate(photoCanvas.width, 0);
+      ctx.scale(-1, 1);
+    }
+
+    ctx.drawImage(video, 0, 0, photoCanvas.width, photoCanvas.height);
+
+    const landmarks = lastLandmarksRef.current;
+    if (landmarks) {
+      drawSkeleton(ctx, landmarks, {
+        width: photoCanvas.width,
+        height: photoCanvas.height,
+        minVisibility: 0.5,
+      });
+    }
+
+    setPhotoDataUrl(photoCanvas.toDataURL("image/png"));
+  }, [mirror]);
 
   const startCamera = useCallback(
     async (facingMode: "user" | "environment") => {
-      stopCamera()
+      stopCamera();
 
       // Secure-context guard: getUserMedia only exists on HTTPS or localhost.
       // Hitting a plain-HTTP URL on mobile leaves navigator.mediaDevices
@@ -90,15 +122,15 @@ export function VideoMode() {
         typeof navigator.mediaDevices.getUserMedia !== "function" ||
         !window.isSecureContext
       ) {
-        setStatus("insecure")
+        setStatus("insecure");
         setError(
           "Camera access needs a secure (HTTPS) connection or localhost. On mobile, open the HTTPS preview URL rather than the raw HTTP IP address.",
-        )
-        return
+        );
+        return;
       }
 
-      setStatus("requesting-camera")
-      setStatusMsg("Requesting camera access…")
+      setStatus("requesting-camera");
+      setStatusMsg("Requesting camera access…");
 
       // Try the preferred facingMode first, then fall back to a constraint-free
       // request (some laptops reject `facingMode: environment` even as `ideal`).
@@ -112,68 +144,65 @@ export function VideoMode() {
           audio: false,
         },
         { video: true, audio: false },
-      ]
+      ];
 
-      let stream: MediaStream | null = null
-      let lastErr: unknown = null
+      let stream: MediaStream | null = null;
+      let lastErr: unknown = null;
       for (const constraints of attempts) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia(constraints)
-          break
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
         } catch (err) {
-          lastErr = err
+          lastErr = err;
           // Only retry on OverconstrainedError / NotFound; bail on permission.
-          const name = (err as DOMException)?.name
-          if (name === "NotAllowedError" || name === "SecurityError") break
+          const name = (err as DOMException)?.name;
+          if (name === "NotAllowedError" || name === "SecurityError") break;
         }
       }
 
       if (!stream) {
-        const e = lastErr as DOMException
-        if (
-          e?.name === "NotAllowedError" ||
-          e?.name === "SecurityError"
-        ) {
-          setStatus("denied")
+        const e = lastErr as DOMException;
+        if (e?.name === "NotAllowedError" || e?.name === "SecurityError") {
+          setStatus("denied");
           setError(
             "Camera permission was denied. Allow camera access in your browser settings to use live pose detection.",
-          )
+          );
         } else if (e?.name === "NotFoundError") {
-          setStatus("error")
-          setError("No camera device was found on this device.")
+          setStatus("error");
+          setError("No camera device was found on this device.");
         } else {
-          setStatus("error")
-          setError(e?.message || "Unable to start the camera.")
+          setStatus("error");
+          setError(e?.message || "Unable to start the camera.");
         }
-        return
+        return;
       }
 
-      streamRef.current = stream
+      streamRef.current = stream;
 
       // Surface which camera/resolution we actually got (handy for debugging).
-      const track = stream.getVideoTracks()[0]
+      const track = stream.getVideoTracks()[0];
       if (track) {
-        const s = track.getSettings()
+        const s = track.getSettings();
         setTrackInfo(
           `${s.width ?? "?"}×${s.height ?? "?"}` +
             (s.facingMode ? ` · ${s.facingMode}` : ""),
-        )
+        );
       }
 
-      const video = videoRef.current
-      if (!video) return
+      const video = videoRef.current;
+      if (!video) return;
 
       // Attach + play. Retry once if play() rejects (common on first load
       // before the element has finished laying out).
-      video.srcObject = stream
+      video.srcObject = stream;
       try {
-        await video.play()
+        await video.play();
       } catch {
         try {
-          await new Promise((r) => setTimeout(r, 120))
-          await video.play()
+          await new Promise((r) => setTimeout(r, 120));
+          await video.play();
         } catch (err) {
-            // console.error("video.play() failed:", err)
+          // console.error("video.play() failed:", err)
           /* surfaced as black-frame / stalled below */
         }
       }
@@ -182,32 +211,32 @@ export function VideoMode() {
       if (!video.videoWidth) {
         await new Promise<void>((resolve) => {
           const handler = () => {
-            video.removeEventListener("loadedmetadata", handler)
-            resolve()
-          }
-          video.addEventListener("loadedmetadata", handler)
+            video.removeEventListener("loadedmetadata", handler);
+            resolve();
+          };
+          video.addEventListener("loadedmetadata", handler);
           // Safety timeout — don't hang forever if the track stalls.
-          setTimeout(resolve, 3000)
-        })
+          setTimeout(resolve, 3000);
+        });
       }
 
       setVideoAspect(
         video.videoWidth && video.videoHeight
           ? video.videoWidth / video.videoHeight
           : 16 / 9,
-      )
-      setStatus("running")
+      );
+      setStatus("running");
     },
     [stopCamera],
-  )
+  );
 
   // ---- Detection loop ----
   const loop = useCallback(() => {
-    const video = videoRef.current
-    const canvas = canvasRef.current
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
     if (!video || !canvas) {
-      rafRef.current = requestAnimationFrame(() => loopRef.current())
-      return
+      rafRef.current = requestAnimationFrame(() => loopRef.current());
+      return;
     }
 
     // Only run when we actually have a frame and the detector is ready.
@@ -218,131 +247,132 @@ export function VideoMode() {
     ) {
       // Keep canvas buffer aligned to the video resolution.
       if (canvas.width !== video.videoWidth) {
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
       }
-      const ctx = canvas.getContext("2d")
+      const ctx = canvas.getContext("2d");
       if (ctx) {
-        ctx.clearRect(0, 0, canvas.width, canvas.height)
-        const now = performance.now()
-        const result = detector.current.detect(video, now)
-        const landmarks = result?.landmarks?.[0]
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const now = performance.now();
+        const result = detector.current.detect(video, now);
+        lastLandmarksRef.current = result?.landmarks?.[0] ?? null;
+        const landmarks = result?.landmarks?.[0];
 
         if (showSkeleton) {
           drawSkeleton(ctx, landmarks, {
             width: canvas.width,
             height: canvas.height,
             minVisibility: 0.5,
-          })
+          });
         }
 
-        const count = countVisibleLandmarks(landmarks, 0.5)
-        setVisibleCount(count)
-        setPersonDetected((result?.landmarks?.length ?? 0) > 0)
+        const count = countVisibleLandmarks(landmarks, 0.5);
+        setVisibleCount(count);
+        setPersonDetected((result?.landmarks?.length ?? 0) > 0);
 
         // FPS rolling average.
         if (lastDetectTsRef.current > 0) {
-          const dt = now - lastDetectTsRef.current
-          fpsBufRef.current.push(1000 / dt)
-          if (fpsBufRef.current.length > 20) fpsBufRef.current.shift()
+          const dt = now - lastDetectTsRef.current;
+          fpsBufRef.current.push(1000 / dt);
+          if (fpsBufRef.current.length > 20) fpsBufRef.current.shift();
           const avg =
             fpsBufRef.current.reduce((a, b) => a + b, 0) /
-            fpsBufRef.current.length
-          setFps(Math.round(avg))
+            fpsBufRef.current.length;
+          setFps(Math.round(avg));
         }
-        lastDetectTsRef.current = now
+        lastDetectTsRef.current = now;
       }
     }
 
     // Prefer requestVideoFrameCallback for tight sync with decoded frames.
     const v = video as HTMLVideoElement & {
-      requestVideoFrameCallback?: (cb: () => void) => number
-    }
+      requestVideoFrameCallback?: (cb: () => void) => number;
+    };
     if (typeof v.requestVideoFrameCallback === "function") {
-      rafRef.current = v.requestVideoFrameCallback(() => loopRef.current())
+      rafRef.current = v.requestVideoFrameCallback(() => loopRef.current());
     } else {
-      rafRef.current = requestAnimationFrame(() => loopRef.current())
+      rafRef.current = requestAnimationFrame(() => loopRef.current());
     }
-  }, [showSkeleton])
+  }, [showSkeleton]);
 
   // Keep the rescheduling ref in sync with the latest loop closure.
   useEffect(() => {
-    loopRef.current = loop
-  }, [loop])
+    loopRef.current = loop;
+  }, [loop]);
 
   // ---- Boot: load model + camera ----
   useEffect(() => {
-    let cancelled = false
-    ;(async () => {
+    let cancelled = false;
+    (async () => {
       try {
-        setStatus("loading-model")
-        setStatusMsg("Loading pose model…")
+        setStatus("loading-model");
+        setStatusMsg("Loading pose model…");
         await detector.current.load((msg) => {
-          if (!cancelled) setStatusMsg(msg)
-        })
-        if (cancelled) return
-        await startCamera(facing.facingMode)
-        if (cancelled) return
+          if (!cancelled) setStatusMsg(msg);
+        });
+        if (cancelled) return;
+        await startCamera(facing.facingMode);
+        if (cancelled) return;
       } catch (err) {
-        if (cancelled) return
-        setStatus("error")
+        if (cancelled) return;
+        setStatus("error");
         setError(
           (err as Error).message ||
             "Failed to load the pose detection model. Check your connection.",
-        )
+        );
       }
-    })()
+    })();
 
     return () => {
-      cancelled = true
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-      stopCamera()
-    }
-  }, [])
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      stopCamera();
+    };
+  }, []);
 
   // Start / restart the loop whenever it changes.
   useEffect(() => {
-    if (status !== "running") return
-    if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    lastDetectTsRef.current = 0
-    fpsBufRef.current = []
-    rafRef.current = requestAnimationFrame(() => loopRef.current())
+    if (status !== "running") return;
+    if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    lastDetectTsRef.current = 0;
+    fpsBufRef.current = [];
+    rafRef.current = requestAnimationFrame(() => loopRef.current());
     return () => {
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
-    }
-  }, [status])
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+    };
+  }, [status]);
 
   // ---- Actions ----
   const handleSwitchCamera = useCallback(async () => {
     const next: FacingState =
       facing.facingMode === "environment"
         ? { facingMode: "user", mirror: true }
-        : { facingMode: "environment", mirror: false }
-    setFacing(next)
-    setMirrorOverride(null)
-    await startCamera(next.facingMode)
-  }, [facing.facingMode, startCamera])
+        : { facingMode: "environment", mirror: false };
+    setFacing(next);
+    setMirrorOverride(null);
+    await startCamera(next.facingMode);
+  }, [facing.facingMode, startCamera]);
 
   const handleRetry = useCallback(async () => {
-    setError("")
+    setError("");
     if (!detector.current.isReady) {
       try {
-        setStatus("loading-model")
-        setStatusMsg("Loading pose model…")
-        await detector.current.load((m) => setStatusMsg(m))
+        setStatus("loading-model");
+        setStatusMsg("Loading pose model…");
+        await detector.current.load((m) => setStatusMsg(m));
       } catch (err) {
-        setStatus("error")
-        setError((err as Error).message)
-        return
+        setStatus("error");
+        setError((err as Error).message);
+        return;
       }
     }
-    await startCamera(facing.facingMode)
-  }, [facing.facingMode, startCamera])
+    await startCamera(facing.facingMode);
+  }, [facing.facingMode, startCamera]);
 
   const isLoading =
-    status === "loading-model" || status === "requesting-camera"
+    status === "loading-model" || status === "requesting-camera";
   const isError =
-    status === "error" || status === "denied" || status === "insecure"
+    status === "error" || status === "denied" || status === "insecure";
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-black text-white">
@@ -436,9 +466,7 @@ export function VideoMode() {
                     <span
                       className={cn(
                         "size-2 rounded-full",
-                        personDetected
-                          ? "bg-lime-400"
-                          : "bg-white/40",
+                        personDetected ? "bg-lime-400" : "bg-white/40",
                       )}
                     />
                   }
@@ -454,6 +482,10 @@ export function VideoMode() {
         {status === "running" && (
           <div className="absolute inset-x-0 bottom-0 z-20 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
             <div className="mx-auto flex max-w-md items-center justify-center gap-3">
+              <ControlButton label="Take photo" onClick={takePhoto}>
+                <Camera className="size-5" />
+              </ControlButton>
+
               <ControlButton
                 label={showSkeleton ? "Hide skeleton" : "Show skeleton"}
                 onClick={() => setShowSkeleton((v) => !v)}
@@ -502,9 +534,7 @@ export function VideoMode() {
                 <Loader2 className="absolute inset-0 m-auto size-7 animate-spin text-lime-400" />
               </div>
               <div className="text-center">
-                <p className="text-sm font-semibold text-white">
-                  {statusMsg}
-                </p>
+                <p className="text-sm font-semibold text-white">{statusMsg}</p>
                 <p className="mt-1 text-xs text-white/50">
                   First load fetches the on-device pose model (~a few MB).
                 </p>
@@ -561,9 +591,31 @@ export function VideoMode() {
             </motion.div>
           )}
         </AnimatePresence>
+
+        {photoDataUrl && (
+          <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/80 p-4">
+            <div className="max-w-full rounded-3xl border border-white/10 bg-black p-4">
+              <img
+                src={photoDataUrl}
+                alt="Captured photo"
+                className="max-h-[70vh] w-auto rounded-xl"
+              />
+              <div className="mt-4 flex justify-center gap-3">
+                <Button onClick={() => setPhotoDataUrl(null)}>Close</Button>
+                <a
+                  href={photoDataUrl}
+                  download="pose-photo.png"
+                  className="inline-flex items-center justify-center rounded-full bg-lime-400 px-4 py-2 text-sm font-semibold text-black"
+                >
+                  Download
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
-  )
+  );
 }
 
 function HudChip({
@@ -571,26 +623,23 @@ function HudChip({
   label,
   tone = "default",
 }: {
-  icon: React.ReactNode
-  label: string
-  tone?: "default" | "lime" | "muted"
+  icon: React.ReactNode;
+  label: string;
+  tone?: "default" | "lime" | "muted";
 }) {
   return (
     <div
       className={cn(
         "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold backdrop-blur",
-        tone === "lime" &&
-          "border-lime-400/40 bg-lime-400/15 text-lime-200",
-        tone === "muted" &&
-          "border-white/15 bg-black/50 text-white/60",
-        tone === "default" &&
-          "border-white/15 bg-black/50 text-white/90",
+        tone === "lime" && "border-lime-400/40 bg-lime-400/15 text-lime-200",
+        tone === "muted" && "border-white/15 bg-black/50 text-white/60",
+        tone === "default" && "border-white/15 bg-black/50 text-white/90",
       )}
     >
       {icon}
       {label}
     </div>
-  )
+  );
 }
 
 function ControlButton({
@@ -599,10 +648,10 @@ function ControlButton({
   onClick,
   active,
 }: {
-  children: React.ReactNode
-  label: string
-  onClick: () => void
-  active?: boolean
+  children: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
 }) {
   return (
     <button
@@ -618,5 +667,5 @@ function ControlButton({
     >
       {children}
     </button>
-  )
+  );
 }
